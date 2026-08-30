@@ -30,6 +30,8 @@ jobs:
 
       - name: Record current position
         env:
+          AIS_MMSI: 311541000
+          AIS_TIMEOUT: 900
           AISSTREAM_API_KEY: ${{ secrets.AISSTREAM_API_KEY }}
         run: python scripts/record_position.py --verbose
 

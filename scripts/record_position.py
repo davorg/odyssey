@@ -12,11 +12,12 @@ from pathlib import Path
 import websockets
 
 
-MMSI = "311541000"
+DEFAULT_MMSI = "311541000"
+DEFAULT_TIMEOUT = 300
+
 DATABASE = Path("data/odyssey.sqlite")
 AISSTREAM_URL = "wss://stream.aisstream.io/v0/stream"
 
-WAIT_TIMEOUT = 300
 HEARTBEAT_INTERVAL = 30
 
 
@@ -76,7 +77,7 @@ def initialise_database():
         """)
 
 
-def save_position(message):
+def save_position(message, mmsi):
     metadata = message["MetaData"]
     report = message["Message"]["PositionReport"]
 
@@ -106,7 +107,7 @@ def save_position(message):
         "valid": report.get("Valid"),
 
         "ship_name": metadata.get("ShipName"),
-        "mmsi": str(metadata.get("MMSI", MMSI)),
+        "mmsi": str(metadata.get("MMSI", mmsi)),
 
         "source": "aisstream",
 
@@ -181,7 +182,7 @@ async def heartbeat(verbose, started):
         )
 
 
-async def get_position(verbose=False):
+async def get_position(mmsi, timeout, verbose=False):
     try:
         api_key = os.environ["AISSTREAM_API_KEY"]
     except KeyError:
@@ -204,12 +205,12 @@ async def get_position(verbose=False):
             ]
         ],
 
-        "FiltersShipMMSI": [MMSI],
+        "FiltersShipMMSI": [mmsi],
         "FilterMessageTypes": ["PositionReport"],
     }
 
     log(
-        f"Connecting to AISStream for MMSI {MMSI}...",
+        f"Connecting to AISStream for MMSI {mmsi}...",
         verbose=verbose,
     )
 
@@ -229,7 +230,7 @@ async def get_position(verbose=False):
             await websocket.send(json.dumps(subscription))
 
             log(
-                f"Waiting up to {WAIT_TIMEOUT} seconds "
+                f"Waiting up to {timeout} seconds "
                 "for a position report...",
                 verbose=verbose,
             )
@@ -239,7 +240,7 @@ async def get_position(verbose=False):
             )
 
             try:
-                async with asyncio.timeout(WAIT_TIMEOUT):
+                async with asyncio.timeout(timeout):
                     async for raw_message in websocket:
 
                         if isinstance(raw_message, bytes):
@@ -272,10 +273,10 @@ async def get_position(verbose=False):
 
                         metadata = message.get("MetaData", {})
 
-                        if str(metadata.get("MMSI")) != MMSI:
+                        if str(metadata.get("MMSI")) != mmsi:
                             continue
 
-                        row = save_position(message)
+                        row = save_position(message, mmsi)
 
                         elapsed = int(
                             (
@@ -311,7 +312,7 @@ async def get_position(verbose=False):
     except TimeoutError:
         print(
             f"No position report received within "
-            f"{WAIT_TIMEOUT} seconds.",
+            f"{timeout} seconds.",
             file=sys.stderr,
         )
         return 1
@@ -326,10 +327,7 @@ async def get_position(verbose=False):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description=(
-            "Record the current AIS position of "
-            "Villa Vie Odyssey."
-        )
+        description="Record the current AIS position of a vessel."
     )
 
     parser.add_argument(
@@ -337,6 +335,29 @@ def parse_args():
         "--verbose",
         action="store_true",
         help="show connection status and waiting progress",
+    )
+
+    parser.add_argument(
+        "-m",
+        "--mmsi",
+        default=os.environ.get("AIS_MMSI", DEFAULT_MMSI),
+        help=(
+            "MMSI of vessel to track "
+            f"(default: $AIS_MMSI or {DEFAULT_MMSI})"
+        ),
+    )
+
+    parser.add_argument(
+        "-t",
+        "--timeout",
+        type=int,
+        default=int(
+            os.environ.get("AIS_TIMEOUT", DEFAULT_TIMEOUT)
+        ),
+        help=(
+            "seconds to wait for a position report "
+            f"(default: $AIS_TIMEOUT or {DEFAULT_TIMEOUT})"
+        ),
     )
 
     return parser.parse_args()
@@ -348,7 +369,11 @@ def main():
     initialise_database()
 
     return asyncio.run(
-        get_position(verbose=args.verbose)
+        get_position(
+            mmsi=args.mmsi,
+            timeout=args.timeout,
+            verbose=args.verbose,
+        )
     )
 
 
