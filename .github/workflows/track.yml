@@ -31,7 +31,7 @@ jobs:
       - name: Record current position
         env:
           AISSTREAM_API_KEY: ${{ secrets.AISSTREAM_API_KEY }}
-        run: python scripts/record_position.py
+        run: python scripts/record_position.py --verbose
 
       - name: Commit updated database
         run: |
