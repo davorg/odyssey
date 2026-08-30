@@ -12,14 +12,14 @@ from pathlib import Path
 import websockets
 
 
-DEFAULT_MMSI = "311541000"
 DEFAULT_TIMEOUT = 300
 
-DATABASE = Path("data/odyssey.sqlite")
 AISSTREAM_URL = "wss://stream.aisstream.io/v0/stream"
 
 HEARTBEAT_INTERVAL = 30
 
+def database_path(mmsi):
+    return Path("data") / f"{mmsi}.sqlite"
 
 def utc_now():
     return datetime.now(timezone.utc)
@@ -31,10 +31,10 @@ def log(message, *, verbose=False):
         print(f"[{timestamp} UTC] {message}", flush=True)
 
 
-def initialise_database():
-    DATABASE.parent.mkdir(parents=True, exist_ok=True)
+def initialise_database(database):
+    database.parent.mkdir(parents=True, exist_ok=True)
 
-    with sqlite3.connect(DATABASE) as db:
+    with sqlite3.connect(database) as db:
         db.execute("""
             CREATE TABLE IF NOT EXISTS positions (
                 id                    INTEGER PRIMARY KEY,
@@ -77,7 +77,7 @@ def initialise_database():
         """)
 
 
-def save_position(message, mmsi):
+def save_position(message, mmsi, database):
     metadata = message["MetaData"]
     report = message["Message"]["PositionReport"]
 
@@ -116,7 +116,7 @@ def save_position(message, mmsi):
         "raw_json": json.dumps(message, separators=(",", ":")),
     }
 
-    with sqlite3.connect(DATABASE) as db:
+    with sqlite3.connect(database) as db:
         db.execute("""
             INSERT INTO positions (
                 received_at,
@@ -182,7 +182,7 @@ async def heartbeat(verbose, started):
         )
 
 
-async def get_position(mmsi, timeout, verbose=False):
+async def get_position(mmsi, timeout, database, verbose=False):
     try:
         api_key = os.environ["AISSTREAM_API_KEY"]
     except KeyError:
@@ -276,7 +276,7 @@ async def get_position(mmsi, timeout, verbose=False):
                         if str(metadata.get("MMSI")) != mmsi:
                             continue
 
-                        row = save_position(message, mmsi)
+                        row = save_position(message, mmsi, database)
 
                         elapsed = int(
                             (
@@ -295,7 +295,7 @@ async def get_position(mmsi, timeout, verbose=False):
 
                         log(
                             f"Position received after "
-                            f"{elapsed}s and saved to {DATABASE}.",
+                            f"{elapsed}s and saved to {database}.",
                             verbose=verbose,
                         )
 
@@ -340,11 +340,8 @@ def parse_args():
     parser.add_argument(
         "-m",
         "--mmsi",
-        default=os.environ.get("AIS_MMSI", DEFAULT_MMSI),
-        help=(
-            "MMSI of vessel to track "
-            f"(default: $AIS_MMSI or {DEFAULT_MMSI})"
-        ),
+        default=os.environ.get("AIS_MMSI"),
+        help="MMSI of vessel to track (or set $AIS_MMSI)",
     )
 
     parser.add_argument(
@@ -360,18 +357,28 @@ def parse_args():
         ),
     )
 
+    args = parser.parse_args()
+
+    if not args.mmsi:
+        parser.error(
+            "An MMSI is required. use --mmsi or set AIS_MMSI"
+        )
+
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
 
-    initialise_database()
+    database = database_path(args.mmsi)
+
+    initialise_database(database)
 
     return asyncio.run(
         get_position(
             mmsi=args.mmsi,
             timeout=args.timeout,
+            database=database,
             verbose=args.verbose,
         )
     )
