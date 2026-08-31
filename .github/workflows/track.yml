@@ -32,7 +32,7 @@ jobs:
         env:
           VESSEL_API_KEY: ${{ secrets.VESSEL_API_KEY }}
           AIS_MMSI: 311541000
-        run: perl scripts/record_position.pl --verbose
+        run: perl scripts/record_position --verbose
 
       - name: Commit updated database
         run: |
