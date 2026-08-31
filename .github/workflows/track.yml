@@ -20,29 +20,24 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-
-      - name: Install dependencies
-        run: pip install websockets
+      - name: Install Perl dependencies
+        run: cpanm --notest DBI DBD::SQLite
 
       - name: Record current position
         env:
+          VESSEL_API_KEY: ${{ secrets.VESSEL_API_KEY }}
           AIS_MMSI: 311541000
-          AIS_TIMEOUT: 900
-          AISSTREAM_API_KEY: ${{ secrets.AISSTREAM_API_KEY }}
-        run: python scripts/record_position.py --verbose
+        run: perl scripts/record_position.pl --verbose
 
       - name: Commit updated database
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add data/odyssey.sqlite
+          git add data/
 
           if ! git diff --cached --quiet; then
             git commit -m "Record Odyssey position"
             git push
           fi
+

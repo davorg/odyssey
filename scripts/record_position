@@ -1,0 +1,257 @@
+#!/usr/bin/env perl
+
+use strict;
+use warnings;
+use feature 'say';
+
+use Getopt::Long;
+use HTTP::Tiny;
+use JSON::PP qw(decode_json encode_json);
+use DBI;
+use File::Path qw(make_path);
+use File::Spec;
+use POSIX qw(strftime);
+
+
+my $mmsi = $ENV{AIS_MMSI};
+my $verbose = 0;
+
+GetOptions(
+    'mmsi=s'    => \$mmsi,
+    'verbose|v' => \$verbose,
+) or die "Usage: $0 --mmsi MMSI [--verbose]\n";
+
+$mmsi //= '';
+
+die "An MMSI is required. Use --mmsi or set AIS_MMSI.\n"
+    unless $mmsi =~ /^\d{9}$/;
+
+my $api_key = $ENV{VESSEL_API_KEY}
+    or die "VESSEL_API_KEY is not set\n";
+
+my $data_dir = 'data';
+
+make_path($data_dir) unless -d $data_dir;
+
+my $database = File::Spec->catfile(
+    $data_dir,
+    "$mmsi.sqlite",
+);
+
+my $dbh = DBI->connect(
+    "dbi:SQLite:dbname=$database",
+    '',
+    '',
+    {
+        RaiseError => 1,
+        PrintError => 0,
+        AutoCommit => 1,
+    },
+);
+
+initialise_database($dbh);
+
+log_message(
+    "Requesting latest terrestrial AIS position for MMSI $mmsi..."
+);
+
+my $url =
+    "https://api.vesselapi.com/v1/vessel/$mmsi/position"
+    . "?filter.idType=mmsi";
+
+my $http = HTTP::Tiny->new(
+    timeout => 30,
+    default_headers => {
+        Authorization => "Bearer $api_key",
+        Accept        => 'application/json',
+    },
+);
+
+my $response = $http->get($url);
+
+unless ($response->{success}) {
+    die sprintf(
+        "VesselAPI request failed: HTTP %s %s\n%s\n",
+        $response->{status},
+        $response->{reason},
+        $response->{content} // '',
+    );
+}
+
+my $data;
+
+eval {
+    $data = decode_json($response->{content});
+    1;
+} or die "Could not decode VesselAPI response: $@\n";
+
+my $position = $data->{vesselPosition}
+    or die "Response contains no vesselPosition\n";
+
+my $observed_at = $position->{timestamp}
+    or die "Position contains no timestamp\n";
+
+my $latest = latest_observation($dbh);
+
+if (defined $latest) {
+    log_message("Newest stored observation: $latest");
+    log_message("VesselAPI observation:     $observed_at");
+
+    if ($observed_at le $latest) {
+        say "No new position available; latest observation is $observed_at.";
+        exit 0;
+    }
+}
+
+my $received_at = strftime(
+    '%Y-%m-%dT%H:%M:%SZ',
+    gmtime,
+);
+
+my $source = lc(
+    $response->{headers}{'x-data-source'} // 'terrestrial'
+);
+
+my $raw_json = encode_json($data);
+
+$dbh->do(
+    q{
+        INSERT INTO positions (
+            observed_at,
+            received_at,
+            processed_at,
+
+            latitude,
+            longitude,
+
+            speed_over_ground,
+            course_over_ground,
+            true_heading,
+            navigational_status,
+
+            suspected_glitch,
+
+            mmsi,
+            imo,
+            vessel_name,
+
+            source,
+            raw_json
+        )
+        VALUES (
+            ?, ?, ?,
+            ?, ?,
+            ?, ?, ?, ?,
+            ?,
+            ?, ?, ?,
+            ?, ?
+        )
+    },
+    undef,
+
+    $observed_at,
+    $received_at,
+    $position->{processed_timestamp},
+
+    $position->{latitude},
+    $position->{longitude},
+
+    $position->{sog},
+    $position->{cog},
+    $position->{heading},
+    $position->{nav_status},
+
+    bool_to_int($position->{suspected_glitch}),
+
+    $position->{mmsi},
+    $position->{imo},
+    $position->{vessel_name},
+
+    $source,
+    $raw_json,
+);
+
+say sprintf(
+    "%s %.6f %.6f SOG=%s COG=%s heading=%s",
+    $observed_at,
+    $position->{latitude},
+    $position->{longitude},
+    defined $position->{sog}     ? $position->{sog}     : '-',
+    defined $position->{cog}     ? $position->{cog}     : '-',
+    defined $position->{heading} ? $position->{heading} : '-',
+);
+
+log_message("Position saved to $database.");
+
+exit 0;
+
+
+sub initialise_database {
+    my ($dbh) = @_;
+
+    $dbh->do(q{
+        CREATE TABLE IF NOT EXISTS positions (
+            id                    INTEGER PRIMARY KEY,
+
+            observed_at           TEXT NOT NULL UNIQUE,
+            received_at           TEXT NOT NULL,
+            processed_at          TEXT,
+
+            latitude              REAL NOT NULL,
+            longitude             REAL NOT NULL,
+
+            speed_over_ground     REAL,
+            course_over_ground    REAL,
+            true_heading          INTEGER,
+            navigational_status   INTEGER,
+
+            suspected_glitch      INTEGER,
+
+            mmsi                  TEXT NOT NULL,
+            imo                   TEXT,
+            vessel_name           TEXT,
+
+            source                TEXT NOT NULL,
+            raw_json              TEXT NOT NULL
+        )
+    });
+
+    $dbh->do(q{
+        CREATE INDEX IF NOT EXISTS
+            positions_observed_at_idx
+        ON positions (observed_at)
+    });
+}
+
+
+sub latest_observation {
+    my ($dbh) = @_;
+
+    return $dbh->selectrow_array(q{
+        SELECT MAX(observed_at)
+        FROM positions
+    });
+}
+
+
+sub bool_to_int {
+    my ($value) = @_;
+
+    return undef unless defined $value;
+
+    return $value ? 1 : 0;
+}
+
+
+sub log_message {
+    my ($message) = @_;
+
+    return unless $verbose;
+
+    my $now = strftime(
+        '%H:%M:%S',
+        gmtime,
+    );
+
+    say "[$now UTC] $message";
+}
