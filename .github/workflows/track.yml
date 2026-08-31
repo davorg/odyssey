@@ -20,6 +20,11 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Set up perl
+        uses: shogo82148/actions-setup-perl@v1.43.1
+        with:
+          perl-version: 5.42
+
       - name: Install Perl dependencies
         run: cpanm --notest DBI DBD::SQLite
 
