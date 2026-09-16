@@ -70,6 +70,15 @@ my $http = HTTP::Tiny->new(
 my $response = $http->get($url);
 
 unless ($response->{success}) {
+
+    if ($response->{status} == 404) {
+        log_message(
+            "No position found. VesselAPI only returns current positions "
+            . "from the previous 80 hours."
+        );
+        exit 0;
+    }
+
     die sprintf(
         "VesselAPI request failed: HTTP %s %s\n%s\n",
         $response->{status},
